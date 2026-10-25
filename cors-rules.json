@@ -1,7 +1,7 @@
 [
   {
     "corsRuleName": "allowBrowserUploads",
-    "allowedOrigins": ["https://PALITAN-MO-ITO.onrender.com"],
+    "allowedOrigins": ["https://testclo.onrender.com"],
     "allowedHeaders": ["*"],
     "allowedOperations": ["s3_put", "s3_get", "s3_head"],
     "exposeHeaders": ["ETag"],
