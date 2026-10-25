@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="tl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My B2 Storage</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f26; --muted:#6b7280; --accent:#2563eb; --line:#e5e7eb; --danger:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111318; --card:#1b1e25; --text:#e8eaee; --muted:#9aa1ae; --accent:#5b8cff; --line:#2b303a; --danger:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 1.3rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  input[type=password], input[type=file] { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--text); }
+  button { padding:10px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:.95rem; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); padding:6px 10px; }
+  button.del { color:var(--danger); }
+  .row { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  progress { width:100%; height:10px; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 0; border-bottom:1px solid var(--line); }
+  li:last-child { border-bottom:0; }
+  .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .meta { color:var(--muted); font-size:.8rem; }
+  .btns { display:flex; gap:6px; flex-shrink:0; }
+  #msg { color:var(--muted); font-size:.9rem; min-height:1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>☁️ My Cloud Storage (Backblaze B2)</h1>
+
+  <div class="card">
+    <input type="password" id="pw" placeholder="Password">
+    <div class="row"><button id="loginBtn">Buksan</button></div>
+  </div>
+
+  <div class="card" id="uploadCard" hidden>
+    <input type="file" id="file">
+    <div class="row"><button id="uploadBtn">Upload</button></div>
+    <div class="row"><progress id="bar" value="0" max="100" hidden></progress></div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card" id="listCard" hidden>
+    <ul id="list"></ul>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let password = sessionStorage.getItem("pw") || "";
+
+function fmtSize(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+}
+function api(path, opts = {}) {
+  opts.headers = Object.assign({ "x-password": password }, opts.headers || {});
+  return fetch(path, opts);
+}
+
+async function loadFiles() {
+  const r = await api("/api/files");
+  if (r.status === 401) { $("msg").textContent = "Maling password."; return false; }
+  const files = await r.json();
+  $("uploadCard").hidden = false;
+  $("listCard").hidden = false;
+  const ul = $("list");
+  ul.innerHTML = "";
+  if (!files.length) ul.innerHTML = '<li class="meta">Wala pang files.</li>';
+  files.forEach((f) => {
+    const li = document.createElement("li");
+    const info = document.createElement("div");
+    info.style.minWidth = "0";
+    const n = document.createElement("div");
+    n.className = "name";
+    n.textContent = f.key.replace(/^\d+-/, "");
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = fmtSize(f.size) + " · " + new Date(f.modified).toLocaleString();
+    info.append(n, m);
+
+    const btns = document.createElement("div");
+    btns.className = "btns";
+    const dl = document.createElement("button");
+    dl.className = "ghost"; dl.textContent = "Download";
+    dl.onclick = async () => {
+      const r = await api("/api/download?key=" + encodeURIComponent(f.key));
+      const { url } = await r.json();
+      if (url) window.location.href = url;
+    };
+    const del = document.createElement("button");
+    del.className = "ghost del"; del.textContent = "Burahin";
+    del.onclick = async () => {
+      if (!confirm("Burahin ang " + n.textContent + "?")) return;
+      await api("/api/files?key=" + encodeURIComponent(f.key), { method: "DELETE" });
+      loadFiles();
+    };
+    btns.append(dl, del);
+    li.append(info, btns);
+    ul.append(li);
+  });
+  return true;
+}
+
+$("loginBtn").onclick = async () => {
+  password = $("pw").value;
+  if (await loadFiles()) sessionStorage.setItem("pw", password);
+};
+
+$("uploadBtn").onclick = async () => {
+  const file = $("file").files[0];
+  if (!file) { $("msg").textContent = "Pumili muna ng file."; return; }
+  $("msg").textContent = "Kumukuha ng upload link...";
+
+  // Step 1: humingi ng presigned link sa server
+  const type = file.type || "application/octet-stream";
+  const r = await api("/api/presign-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, contentType: type, size: file.size }),
+  });
+  const data = await r.json();
+  if (!r.ok) { $("msg").textContent = data.error || "May error."; return; }
+
+  // Step 2: i-upload nang direkta sa B2 (PUT, hindi POST)
+  const xhr = new XMLHttpRequest();
+  xhr.open("PUT", data.url);
+  xhr.setRequestHeader("Content-Type", data.contentType);
+  $("bar").hidden = false; $("bar").value = 0;
+  $("msg").textContent = "Nag-a-upload...";
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("bar").value = (e.loaded / e.total) * 100; };
+  xhr.onload = () => {
+    $("bar").hidden = true;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      $("msg").textContent = "Na-upload na! ✅";
+      $("file").value = "";
+      loadFiles();
+    } else {
+      $("msg").textContent = "Nabigo ang upload (status " + xhr.status + ").";
+    }
+  };
+  xhr.onerror = () => {
+    $("bar").hidden = true;
+    $("msg").textContent = "Nabigo. Kadalasan ay CORS ito: i-check ang CORS Rules ng bucket.";
+  };
+  xhr.send(file);
+};
+
+if (password) loadFiles();
+</script>
+</body>
+</html>
